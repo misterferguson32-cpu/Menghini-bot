@@ -8,6 +8,7 @@ NON mettere il token nel codice. Usa variabile d'ambiente BOT_TOKEN.
 
 import os, csv, io, re, logging, threading, http.server, socketserver
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram.error import Conflict
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, TypeHandler, ApplicationHandlerStop, ContextTypes, filters
 from openpyxl import Workbook
 
@@ -50,13 +51,6 @@ def _load_netti(row):
             "f2": row.get("Fascia2") or "",
         }
 
-CATALOGO.update({
-    "DCG418T2-QW": "SMERIGLIATRICE ANGOLARE 125MM 54V XR FLEXVOLT 2 BATTERIE",
-    "DCD996P3-QW": "TRAPANO AVVITATORE A PERCUSSIONE 18V XR 3 BATTERIE",
-})
-NETTI.update({
-    "DCG418T2-QW": {"desc": "SMERIGLIATRICE 125MM 54V", "f0": "312,00", "f1": "295,00", "f2": "278,00"},
-})
 carica_csv("catalogo.csv", _load_catalogo)
 carica_csv("clienti.csv", _load_clienti)
 carica_csv("netti.csv", _load_netti)
@@ -124,34 +118,41 @@ def normalizza_codice(q):
     return q
 
 def estrai_codice_quantita(testo):
+    """Estrae (codice, quantita) accettando vari formati:
+    'CODICE 3', 'CODICE x3', '3 CODICE', 'CODICE 3 PZ', 'CODICE' (qta=1)."""
     t = testo.upper().strip()
+    # 'x3' / 'x 3' -> ' 3 '
+    t = re.sub(r'\bX\s*(\d{1,3})\b', r' \1 ', t)
+    # '3 PZ' / '3 PEZZI' / '3 QT' / '3 QUANTITA' -> ' 3 '
+    t = re.sub(r'\b(\d{1,3})\s*(PZ|PEZZI|PEZ|QT|QTA|QUANTITA)\b', r' \1 ', t)
     qta = 1
-    m_qta = re.search(r'(\d+)\s*(PEZZI|PZ|QT|QUANTITA)?\s*$', t)
-    if m_qta and ("PEZZI" in t or "PZ" in t or " " in t.strip()):
-        try:
-            cand = int(m_qta.group(1))
-            if cand < 500:
-                qta = cand
-                t = t[:m_qta.start()].strip()
-        except: pass
-    t_nospazi = t.replace(" ", "")
-    m = re.search(r'([A-Z0-9]{3,}[-]?[A-Z0-9\-]{3,})', t_nospazi)
-    if m:
-        codice = normalizza_codice(m.group(1))
-        return codice, qta
-    return None, qta
+    codice = None
+    for tok in re.split(r'[\s,;:]+', t):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if tok.lstrip('-').isdigit():
+            n = int(tok)
+            if 0 < n <= 999:
+                qta = n
+        elif codice is None:
+            codice = tok
+    if codice is None:
+        return None, qta
+    return normalizza_codice(codice), qta
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     get_state(context)
     await update.message.reply_text(
-        "Ciao, sono *MENGHINI Bot* - DETTATURA CODICI CATALOGO\n\n"
-        "NUOVO FLUSSO:\n"
-        "1. Metti un codice, es. `DCG418T2-QW`\n"
-        "2. Ti dico cos'è + i 3 netti\n"
-        "3. Ti chiedo: vuoi aggiungere alla lista? E quanti pezzi?\n"
-        "4. Rispondi `SI 2` oppure `NO`\n\n"
-        "Con 👥 Lista utenti vedi utenti con codici e nomi.\nCon 🔍 Cerca utente cerchi per codice o nome.\n"
-        "Con 📥 Excel ti mando il file con solo *Codice* e *Quantità*",
+        "Ciao, sono *MENGHINI Bot* - LISTA ACQUISTO\n\n"
+        "*Percorso rapido:*\n"
+        "1️⃣ Mandami il codice prodotto (scritto o 🎤 vocale), es. `DCG418T2-QW 3`\n"
+        "2️⃣ Ti dico cos'è + i 3 netti e ti chiedo conferma\n"
+        "3️⃣ Rispondi `SI` (usa la quantità proposta), `SI 5` per cambiarla, oppure `NO`\n"
+        "4️⃣ Ripeti per ogni articolo\n"
+        "5️⃣ Alla fine tocca 📥 *Excel* per il file (2 colonne: Codice, Quantità)\n\n"
+        "Formati quantità: `CODICE 3`, `CODICE x3`, `3 CODICE`.\n"
+        "Utilità: 👤 Cliente, 👥 Lista utenti, 🔍 Cerca utente, 📋 Lista, 🗑️ Pulisci lista.",
         parse_mode="Markdown", reply_markup=TASTIERA)
 
 # --- NUOVO: mostra info + netti e chiede conferma ---
@@ -338,7 +339,7 @@ async def gestisci_testo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if testo in ["🎤 Dettatura", "🔍 Cerca codice", "👤 Cliente", "💶 Netto 3 fasce", "👥 Lista utenti", "🔍 Cerca utente", "📋 Lista", "📥 Excel", "🗑️ Pulisci lista"]:
         if testo == "🎤 Dettatura":
-            await update.message.reply_text("Dimmi il codice, es. DCG418T2-QW. Poi ti dico cos'è + i 3 netti e ti chiedo se aggiungerlo.")
+            await update.message.reply_text("Mandami un 🎤 vocale oppure scrivi il codice, es. `DCG418T2-QW 3`.\nTi dico cos'è + i 3 netti e ti chiedo se aggiungerlo.", parse_mode="Markdown")
         elif testo == "📋 Lista":
             await mostra_lista(update, context)
         elif testo == "📥 Excel":
@@ -371,31 +372,47 @@ async def gestisci_testo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     await cliente(update, context)
 
+async def trascrivi_vocale(update: Update) -> str:
+    # Trascrive un vocale con l'API OpenAI (Whisper). Richiede la variabile OPENAI_API_KEY.
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY non configurata")
+    voice = update.message.voice
+    f = await voice.get_file()
+    data = await f.download_as_bytearray()
+    import httpx
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            data={"model": "whisper-1", "language": "it"},
+            files={"file": ("vocale.ogg", bytes(data), "audio/ogg")},
+        )
+        r.raise_for_status()
+        return (r.json().get("text") or "").strip()
+
 async def gestisci_vocale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        voice = update.message.voice
-        f = await voice.get_file()
-        data = await f.download_as_bytearray()
-        try:
-            import whisper, tempfile
-            with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
-                tmp.write(data); tmp_path = tmp.name
-            model = whisper.load_model("tiny")
-            res = model.transcribe(tmp_path, language="it")
-            testo = res.get("text", "").strip()
-            os.unlink(tmp_path)
-            if testo:
-                await update.message.reply_text(f"Ho capito: _{testo}_")
-                codice, qta = estrai_codice_quantita(testo)
-                if codice:
-                    await mostra_info_codice(update, context, codice, qta)
-                return
-        except Exception as e:
-            logger.info(f"Whisper non disponibile: {e}")
-        await update.message.reply_text("Ho ricevuto il vocale, ma la trascrizione non è attiva su questo server. Scrivimi il codice qui, es. DCG418T2-QW")
+        testo = await trascrivi_vocale(update)
+    except RuntimeError:
+        await update.message.reply_text("🎤 Trascrizione vocale non configurata (manca OPENAI_API_KEY). Scrivimi il codice, es. DCG418T2-QW.")
+        return
     except Exception as e:
-        logger.error(e)
-        await update.message.reply_text("Vocale non letto. Scrivimi il codice qui.")
+        logger.error(f"Errore trascrizione vocale: {e}")
+        await update.message.reply_text("Non sono riuscito a leggere il vocale. Riprova o scrivimi il codice.")
+        return
+    if not testo:
+        await update.message.reply_text("Non ho capito l'audio. Riprova o scrivimi il codice.")
+        return
+    await update.message.reply_text(f"🎤 Ho capito: {testo}")
+    # Il vocale può anche essere la conferma (SI/NO/quantità) di un codice in attesa
+    if await gestisci_conferma(update, context, testo):
+        return
+    codice, qta = estrai_codice_quantita(testo)
+    if codice:
+        await mostra_info_codice(update, context, codice, qta)
+    else:
+        await update.message.reply_text("Non ho riconosciuto un codice. Riprova o scrivimi il codice.")
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     # Logga gli errori senza far riavviare il bot in loop.
@@ -404,13 +421,26 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     else:
         logger.error("Errore durante la gestione di un update", exc_info=context.error)
 
+class _HealthHandler(http.server.BaseHTTPRequestHandler):
+    # Risponde solo OK, senza servire file della cartella (evita di esporre
+    # clienti.csv, catalogo, netti, listino... sull'URL pubblico di Render).
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"MENGHINI bot attivo")
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+    def log_message(self, *args):
+        pass
+
 def start_dummy_server():
     # Render Web Service vuole una porta aperta, altrimenti dice "No open ports detected"
     # e riavvia il bot in loop. Questo server finto tiene aperta la porta.
     port = int(os.getenv("PORT", 10000))
     try:
-        handler = http.server.SimpleHTTPRequestHandler
-        httpd = socketserver.TCPServer(("0.0.0.0", port), handler)
+        httpd = socketserver.TCPServer(("0.0.0.0", port), _HealthHandler)
         t = threading.Thread(target=httpd.serve_forever, daemon=True)
         t.start()
         print(f"Dummy server acceso su porta {port} per Render")
