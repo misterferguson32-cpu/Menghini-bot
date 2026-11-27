@@ -414,8 +414,47 @@ async def mostra_lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Lista vuota. Metti un codice per iniziare.")
         return
     cliente_txt = f"Cliente: {st['cliente']['nome']} (Cod. {st['cliente']['num']})\n\n" if st["cliente"] else ""
-    txt = cliente_txt + "📋 Lista:\n" + "\n".join([f"• {c} x {q}" for c, q in st["lista"]])
-    await update.message.reply_text(txt)
+    righe = "\n".join([f"{i+1}. `{c}` x {q}" for i, (c, q) in enumerate(st["lista"])])
+    txt = cliente_txt + "📋 Lista:\n" + righe + "\n\nPer modificare una riga: `modifica 2 NUOVO_CODICE 5`\nPer rimuovere una riga: `rimuovi 2`\nPer annullare l'ultima: `annulla`"
+    await update.message.reply_text(txt, parse_mode="Markdown")
+
+async def rimuovi_riga(update: Update, context: ContextTypes.DEFAULT_TYPE, num_riga: int):
+    st = get_state(context)
+    if not st["lista"]:
+        await update.message.reply_text("Lista vuota.")
+        return
+    if num_riga < 1 or num_riga > len(st["lista"]):
+        await update.message.reply_text(f"Numero riga non valido. Ci sono {len(st['lista'])} righe.")
+        return
+    codice, qta = st["lista"][num_riga - 1]
+    del st["lista"][num_riga - 1]
+    await update.message.reply_text(f"🗑️ Rimossa riga {num_riga}: `{codice}` x {qta}\n\nRimaste {len(st['lista'])} righe.", parse_mode="Markdown")
+
+async def modifica_riga(update: Update, context: ContextTypes.DEFAULT_TYPE, num_riga: int, nuovo_codice: str, nuova_qta: int = None):
+    st = get_state(context)
+    if not st["lista"]:
+        await update.message.reply_text("Lista vuota.")
+        return
+    if num_riga < 1 or num_riga > len(st["lista"]):
+        await update.message.reply_text(f"Numero riga non valido. Ci sono {len(st['lista'])} righe.")
+        return
+    vecchio_codice, vecchia_qta = st["lista"][num_riga - 1]
+    codice = normalizza_codice(nuovo_codice) if nuovo_codice else vecchio_codice
+    qta = nuova_qta if nuova_qta is not None else vecchia_qta
+    st["lista"][num_riga - 1] = (codice, qta)
+    await update.message.reply_text(
+        f"✏️ Riga {num_riga} modificata:\n"
+        f"Prima: `{vecchio_codice}` x {vecchia_qta}\n"
+        f"Ora: `{codice}` x {qta}",
+        parse_mode="Markdown")
+
+async def annulla_ultima(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    st = get_state(context)
+    if not st["lista"]:
+        await update.message.reply_text("Lista vuota.")
+        return
+    codice, qta = st["lista"].pop()
+    await update.message.reply_text(f"↩️ Annullata ultima riga: `{codice}` x {qta}\n\nRimaste {len(st['lista'])} righe.", parse_mode="Markdown")
 
 async def svuota_lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
     st = get_state(context)
@@ -478,6 +517,28 @@ async def gestisci_testo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Ok, lettura foto annullata. Nessuna riga aggiunta.")
             return
         st["foto_attesa"] = None  # altro testo: prosegui con il flusso normale
+    # Comandi di modifica/rimozione righe lista
+    t_lower = testo.lower()
+    if t_lower.startswith("rimuovi ") or t_lower.startswith("rimuovi"):
+        m = re.match(r"rimuovi\s+(\d+)", testo, re.IGNORECASE)
+        if m:
+            await rimuovi_riga(update, context, int(m.group(1)))
+            return
+        await update.message.reply_text("Uso: `rimuovi 2` per rimuovere la riga 2.", parse_mode="Markdown")
+        return
+    if t_lower.startswith("modifica ") or t_lower.startswith("modifica"):
+        m = re.match(r"modifica\s+(\d+)\s+(\S+)(?:\s+(\d+))?", testo, re.IGNORECASE)
+        if m:
+            num_riga = int(m.group(1))
+            nuovo_codice = m.group(2)
+            nuova_qta = int(m.group(3)) if m.group(3) else None
+            await modifica_riga(update, context, num_riga, nuovo_codice, nuova_qta)
+            return
+        await update.message.reply_text("Uso: `modifica 2 DCG418T2-QW 3` per modificare la riga 2.", parse_mode="Markdown")
+        return
+    if t_lower in ["annulla", "annulla ultima", "undo"]:
+        await annulla_ultima(update, context)
+        return
     # Prima: se sei in ricerca utente, cerca
     st_tmp = get_state(context)
     if st_tmp.get("modalita") == "cerca_utente":
@@ -909,6 +970,28 @@ def main():
     app.add_handler(CommandHandler("excel", manda_excel))
     app.add_handler(CommandHandler("utenti", lista_utenti))
     app.add_handler(CommandHandler("cerca", cerca_codice))
+
+    async def cmd_rimuovi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if context.args and context.args[0].isdigit():
+            await rimuovi_riga(update, context, int(context.args[0]))
+        else:
+            await update.message.reply_text("Uso: /rimuovi 2 per rimuovere la riga 2.")
+
+    async def cmd_modifica(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if len(context.args) >= 2 and context.args[0].isdigit():
+            num_riga = int(context.args[0])
+            nuovo_codice = context.args[1]
+            nuova_qta = int(context.args[2]) if len(context.args) >= 3 and context.args[2].isdigit() else None
+            await modifica_riga(update, context, num_riga, nuovo_codice, nuova_qta)
+        else:
+            await update.message.reply_text("Uso: /modifica 2 DCG418T2-QW 3 per modificare la riga 2.")
+
+    async def cmd_annulla(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await annulla_ultima(update, context)
+
+    app.add_handler(CommandHandler("rimuovi", cmd_rimuovi))
+    app.add_handler(CommandHandler("modifica", cmd_modifica))
+    app.add_handler(CommandHandler("annulla", cmd_annulla))
     app.add_handler(MessageHandler(filters.PHOTO, gestisci_foto))
     app.add_handler(MessageHandler(filters.VOICE, gestisci_vocale))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, gestisci_testo))
