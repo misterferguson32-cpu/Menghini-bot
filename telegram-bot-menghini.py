@@ -580,9 +580,6 @@ async def trascrivi_vocale(update: Update) -> str:
 async def gestisci_vocale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         testo = await trascrivi_vocale(update)
-    except RuntimeError:
-        await update.message.reply_text("🎤 Trascrizione vocale non configurata (manca CLOUDFLARE_API_TOKEN). Scrivimi il codice, es. DCG418T2-QW.")
-        return
     except Exception as e:
         logger.error(f"Errore trascrizione vocale: {e}")
         await update.message.reply_text(f"Non sono riuscito a leggere il vocale.\nErrore: {str(e)[:200]}\nRiprova o scrivimi il codice.")
@@ -666,9 +663,6 @@ async def gestisci_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.reply_text("📷 Leggo il foglio...")
         righe = await leggi_foglio_foto(update)
-    except RuntimeError as e:
-        await update.message.reply_text(f"📷 Lettura foto non disponibile ({e}).\nScrivimi i codici a mano oppure attiva CLOUDFLARE_API_TOKEN su Render.")
-        return
     except Exception as e:
         logger.error(f"Errore lettura foto: {e}")
         await update.message.reply_text(f"Non sono riuscito a leggere la foto.\nErrore: {str(e)[:200]}\nRiprova con una foto più nitida e ben illuminata.")
