@@ -162,6 +162,43 @@ def estrai_codice_quantita(testo):
         return None, qta
     return normalizza_codice(codice), qta
 
+def estrai_multipli_codici(testo):
+    """Estrae una lista di (codice, quantita) da un messaggio con più codici.
+    Esempio: 'DT9445-QZ 1 DCE530N-XJ 1 DCD708D2T-QW 1'
+    -> [('DT9445-QZ', 1), ('DCE530N-XJ', 1), ('DCD708D2T-QW', 1)]"""
+    t = testo.upper().strip()
+    # Correzione errori comuni
+    t = t.replace("À", "A").replace("È", "E").replace("É", "E")
+    t = t.replace("Ì", "I").replace("Ò", "O").replace("Ù", "U")
+    # 'x3' / 'x 3' -> ' 3 '
+    t = re.sub(r'\bX\s*(\d{1,3})\b', r' \1 ', t)
+    # '3 PZ' / '3 PEZZI' -> ' 3 '
+    t = re.sub(r'\b(\d{1,3})\s*(PZ|PEZZI|PEZ|QT|QTA|QUANTITA)\b', r' \1 ', t)
+    tokens = [tok.strip() for tok in re.split(r'[\s,;:]+', t) if tok.strip()]
+    risultato = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.lstrip('-').isdigit():
+            # Numero senza codice prima: salta
+            i += 1
+            continue
+        # Questo token è un codice
+        codice = tok
+        qta = 1
+        # Controlla se il prossimo token è un numero (quantità)
+        if i + 1 < len(tokens) and tokens[i+1].lstrip('-').isdigit():
+            n = int(tokens[i+1])
+            if 0 < n <= 999:
+                qta = n
+                i += 2
+            else:
+                i += 1
+        else:
+            i += 1
+        risultato.append((normalizza_codice(codice), qta))
+    return risultato
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     get_state(context)
     await update.message.reply_text(
@@ -455,6 +492,35 @@ async def gestisci_testo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if testo.upper() in c["nome"].upper() and len(testo) > 4:
                 await cliente(update, context)
                 return
+        # Prova a estrarre più codici dal messaggio
+        multipli = estrai_multipli_codici(testo)
+        if len(multipli) > 1:
+            # Più codici: aggiungili tutti direttamente alla lista
+            st = get_state(context)
+            aggiunti = []
+            for cod, qta in multipli:
+                trovato = False
+                for i, (c, q) in enumerate(st["lista"]):
+                    if c == cod:
+                        st["lista"][i] = (c, q + qta)
+                        trovato = True
+                        break
+                if not trovato:
+                    st["lista"].append((cod, qta))
+                in_cat = cod in CATALOGO or cod in NETTI
+                aggiunti.append((cod, qta, in_cat))
+            st["in_attesa"] = None
+            righe = []
+            for cod, qta, in_cat in aggiunti:
+                icona = "✅" if in_cat else "⚠️"
+                righe.append(f"• {icona} `{cod}` x {qta}")
+            await update.message.reply_text(
+                f"✅ Aggiunte {len(aggiunti)} righe alla lista:\n" + "\n".join(righe) +
+                f"\n\nTotale lista: {len(st['lista'])} righe.\n"
+                f"Dimmi altri codici, oppure tocca 📥 Excel per il file.",
+                parse_mode="Markdown")
+            return
+        # Un solo codice: usa il flusso normale
         codice, qta = estrai_codice_quantita(testo)
         if codice:
             await mostra_info_codice(update, context, codice, qta)
