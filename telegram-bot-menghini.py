@@ -158,6 +158,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Utilità: 👤 Cliente, 👥 Lista utenti, 🔍 Cerca utente, 📋 Lista, 🗑️ Pulisci lista.",
         parse_mode="Markdown", reply_markup=TASTIERA)
 
+# --- Diagnostica: mostra quali chiavi AI vede il servizio (senza rivelare i valori) ---
+async def diagnostica(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cf = _cf_config()
+    gm = _gemini_config()
+    try:
+        _ai_config()
+        base = "Groq" if os.getenv("GROQ_API_KEY", "").strip() else "OpenAI"
+    except RuntimeError:
+        base = None
+    acct_ok = "sì" if os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip() else "NO"
+    tok_ok = "sì" if (os.getenv("CLOUDFLARE_API_TOKEN", "").strip() or os.getenv("CF_API_TOKEN", "").strip()) else "NO"
+    testo = (
+        "🔧 *Diagnostica*\n"
+        f"• Cloudflare: {'OK' if cf else 'MANCANTE'} (Account ID: {acct_ok}, Token: {tok_ok})\n"
+        f"• Gemini: {'OK' if gm else 'no'}\n"
+        f"• Groq/OpenAI: {base or 'no'}\n"
+        f"• Utenti autorizzati: {len(AUTORIZZATI)}\n"
+        f"• Catalogo: {len(CATALOGO)} codici\n"
+        f"• Netti: {len(NETTI)} codici\n"
+        f"• Clienti: {len(CLIENTI)}"
+    )
+    await update.message.reply_text(testo, parse_mode="Markdown")
+
 # --- NUOVO: mostra info + netti e chiede conferma ---
 async def mostra_info_codice(update: Update, context: ContextTypes.DEFAULT_TYPE, codice_raw: str, qta_proposta: int = 1):
     codice = normalizza_codice(codice_raw)
@@ -708,6 +731,7 @@ def main():
     # Controllo accesso PRIMA di tutto (group=-1)
     app.add_handler(TypeHandler(Update, check_autorizzazione), group=-1)
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("diagnostica", diagnostica))
     app.add_handler(CommandHandler("lista", mostra_lista))
     app.add_handler(CommandHandler("excel", manda_excel))
     app.add_handler(CommandHandler("utenti", lista_utenti))
