@@ -1,0 +1,14 @@
+name: Keep-alive Render
+
+on:
+  schedule:
+    # Ogni 10 minuti: GitHub puo' ritardare i cron sotto carico.
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping del bot per tenerlo sveglio
+        run: curl -s -o /dev/null -w "HTTP %{http_code}\n" https://menghini-bot.onrender.com
