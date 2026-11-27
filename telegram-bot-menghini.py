@@ -460,9 +460,19 @@ async def _cf_run(model, *, json=None, content=None, content_type=None, timeout=
 
 async def _cf_trascrivi(raw):
     # Trascrive l'audio con Whisper su Cloudflare Workers AI.
-    model = os.getenv("CF_WHISPER_MODEL", "@cf/openai/whisper")
-    data = await _cf_run(model, content=raw, content_type="audio/ogg")
-    return ((data.get("result") or {}).get("text") or "").strip()
+    modelli = [os.getenv("CF_WHISPER_MODEL", "@cf/openai/whisper-large-v3-turbo"), "@cf/openai/whisper"]
+    ultimo = None
+    for model in modelli:
+        try:
+            data = await _cf_run(model, content=raw, content_type="audio/ogg")
+            testo = ((data.get("result") or {}).get("text") or "").strip()
+            if testo:
+                return testo
+            ultimo = "risposta vuota"
+        except Exception as e:
+            ultimo = str(e)[:200]
+            continue
+    raise RuntimeError(ultimo or "trascrizione fallita")
 
 _CF_LICENSE_OK = False
 
@@ -575,7 +585,7 @@ async def gestisci_vocale(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     except Exception as e:
         logger.error(f"Errore trascrizione vocale: {e}")
-        await update.message.reply_text("Non sono riuscito a leggere il vocale. Riprova o scrivimi il codice.")
+        await update.message.reply_text(f"Non sono riuscito a leggere il vocale.\nErrore: {str(e)[:200]}\nRiprova o scrivimi il codice.")
         return
     if not testo:
         await update.message.reply_text("Non ho capito l'audio. Riprova o scrivimi il codice.")
@@ -661,7 +671,7 @@ async def gestisci_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     except Exception as e:
         logger.error(f"Errore lettura foto: {e}")
-        await update.message.reply_text("Non sono riuscito a leggere la foto. Riprova con una foto più nitida e ben illuminata.")
+        await update.message.reply_text(f"Non sono riuscito a leggere la foto.\nErrore: {str(e)[:200]}\nRiprova con una foto più nitida e ben illuminata.")
         return
     if not righe:
         await update.message.reply_text("Non ho trovato codici nella foto. Riprova con una foto più nitida.")
