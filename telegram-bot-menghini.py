@@ -376,6 +376,13 @@ async def mostra_lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = cliente_txt + "📋 Lista:\n" + "\n".join([f"• {c} x {q}" for c, q in st["lista"]])
     await update.message.reply_text(txt)
 
+async def svuota_lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    st = get_state(context)
+    st["lista"] = []
+    st["in_attesa"] = None
+    st["foto_attesa"] = None
+    await update.message.reply_text("🗑️ Lista svuotata completamente. Puoi ripartire da zero.")
+
 async def manda_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     st = get_state(context)
     if not st["lista"]:
@@ -434,9 +441,7 @@ async def gestisci_testo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif testo == "📥 Excel":
             await manda_excel(update, context)
         elif testo == "🗑️ Pulisci lista":
-            get_state(context)["lista"] = []
-            get_state(context)["in_attesa"] = None
-            await update.message.reply_text("Lista svuotata. Catalogo e clienti restano salvati.")
+            await svuota_lista(update, context)
         elif testo == "🔍 Cerca codice":
             await cerca_codice(update, context)
         elif testo == "👤 Cliente":
@@ -801,6 +806,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("diagnostica", diagnostica))
     app.add_handler(CommandHandler("lista", mostra_lista))
+    app.add_handler(CommandHandler("svuota", svuota_lista))
+    app.add_handler(CommandHandler("pulisci", svuota_lista))
     app.add_handler(CommandHandler("excel", manda_excel))
     app.add_handler(CommandHandler("utenti", lista_utenti))
     app.add_handler(CommandHandler("cerca", cerca_codice))
