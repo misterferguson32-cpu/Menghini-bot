@@ -433,8 +433,9 @@ async def gestisci_testo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def _cf_config():
     # Ritorna (account_id, api_token) se Cloudflare Workers AI è configurato, altrimenti None.
-    acct = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
-    token = os.getenv("CLOUDFLARE_API_TOKEN", "").strip() or os.getenv("CF_API_TOKEN", "").strip()
+    # Fallback hardcoded (temporaneo) finché le env var su Render non vengono salvate.
+    acct = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip() or "3d543f8e1b180e9b04808821c48df258"
+    token = os.getenv("CLOUDFLARE_API_TOKEN", "").strip() or os.getenv("CF_API_TOKEN", "").strip() or "cfut_v2LqV1xHLHHMteSWanVaW91dckzL7VAi2GX4CLkr7b90dd17"
     if not (acct and token):
         return None
     return acct, token
