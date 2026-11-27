@@ -224,8 +224,15 @@ async def diagnostica(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- NUOVO: mostra info + netti e chiede conferma ---
 async def mostra_info_codice(update: Update, context: ContextTypes.DEFAULT_TYPE, codice_raw: str, qta_proposta: int = 1):
     codice = normalizza_codice(codice_raw)
+    st = get_state(context)
     if codice not in CATALOGO and codice not in NETTI:
-        await update.message.reply_text(f"Codice {codice} non trovato. Controlla il codice e riprova.")
+        st["in_attesa"] = {"codice": codice, "qta_proposta": qta_proposta, "non_trovato": True}
+        await update.message.reply_text(
+            f"⚠️ Il codice *{codice}* non è nel catalogo.\n\n"
+            f"Vuoi aggiungerlo comunque alla lista?\n"
+            f"Quantità proposta: {qta_proposta}\n"
+            f"Rispondi: *SI {qta_proposta}* per aggiungere {qta_proposta} pezzi, oppure *SI 5* per 5 pezzi, oppure *NO*.",
+            parse_mode="Markdown")
         return
     desc = CATALOGO.get(codice, NETTI.get(codice, {}).get("desc", ""))
     netto_txt = ""
@@ -234,7 +241,6 @@ async def mostra_info_codice(update: Update, context: ContextTypes.DEFAULT_TYPE,
         netto_txt = f"\n\n💶 Netti 3 fasce:\nFascia 0: {n['f0']}\nFascia 1: {n['f1']}\nFascia 2: {n['f2']}"
     else:
         netto_txt = "\n\n💶 Netto non presente nei Netti 3 Fasce per questo codice."
-    st = get_state(context)
     st["in_attesa"] = {"codice": codice, "qta_proposta": qta_proposta}
     await update.message.reply_text(
         f"📦 *{codice}*\n{desc}{netto_txt}\n\n"
