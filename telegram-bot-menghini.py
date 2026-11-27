@@ -189,7 +189,7 @@ async def diagnostica(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Clienti: {len(CLIENTI)}\n\n"
         f"*Variabili AI trovate nel processo:*\n{elenco}"
     )
-    await update.message.reply_text(testo, parse_mode="Markdown")
+    await update.message.reply_text(testo)
 
 # --- NUOVO: mostra info + netti e chiede conferma ---
 async def mostra_info_codice(update: Update, context: ContextTypes.DEFAULT_TYPE, codice_raw: str, qta_proposta: int = 1):
