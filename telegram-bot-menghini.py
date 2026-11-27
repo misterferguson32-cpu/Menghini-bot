@@ -57,10 +57,6 @@ CATALOGO.update({
 NETTI.update({
     "DCG418T2-QW": {"desc": "SMERIGLIATRICE 125MM 54V", "f0": "312,00", "f1": "295,00", "f2": "278,00"},
 })
-CLIENTI.extend([
-    {"num": "1001", "nome": "CAMBIELLI REGGIO", "localita": "REGGIO EMILIA", "indirizzo": "VIA ESEMPIO 1", "office": "REGGIO"},
-    {"num": "1002", "nome": "ROSSI FERRAMENTA", "localita": "MILANO", "indirizzo": "VIA ESEMPIO 2", "office": "MILANO"},
-])
 carica_csv("catalogo.csv", _load_catalogo)
 carica_csv("clienti.csv", _load_clienti)
 carica_csv("netti.csv", _load_netti)
