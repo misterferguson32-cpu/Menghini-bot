@@ -6,7 +6,7 @@ MENGHINI Bot per Telegram - DETTATURA CODICI CATALOGO - NUOVO FLUSSO
 NON mettere il token nel codice. Usa variabile d'ambiente BOT_TOKEN.
 """
 
-import os, csv, io, re, logging, threading, http.server, socketserver
+import os, csv, io, re, base64, logging, threading, http.server, socketserver
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.error import Conflict
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, TypeHandler, ApplicationHandlerStop, ContextTypes, filters
@@ -100,6 +100,8 @@ def get_state(context):
         context.user_data["in_attesa"] = None  # {codice, qta_proposta}
     if "modalita" not in context.user_data:
         context.user_data["modalita"] = None  # None oppure "cerca_utente"
+    if "foto_attesa" not in context.user_data:
+        context.user_data["foto_attesa"] = None  # anteprima lettura foto
     return context.user_data
 
 TASTIERA = ReplyKeyboardMarkup([
@@ -152,6 +154,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "4️⃣ Ripeti per ogni articolo\n"
         "5️⃣ Alla fine tocca 📥 *Excel* per il file (2 colonne: Codice, Quantità)\n\n"
         "Formati quantità: `CODICE 3`, `CODICE x3`, `3 CODICE`.\n"
+        "📷 Puoi anche mandare la FOTO di un foglio scritto a mano (codici + quantità): li leggo e te li faccio confermare con `OK`.\n"
         "Utilità: 👤 Cliente, 👥 Lista utenti, 🔍 Cerca utente, 📋 Lista, 🗑️ Pulisci lista.",
         parse_mode="Markdown", reply_markup=TASTIERA)
 
@@ -329,6 +332,29 @@ async def gestisci_testo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     testo = (update.message.text or "").strip()
     if not testo:
         return
+    # Conferma della lettura foto (anteprima in attesa)
+    st = get_state(context)
+    if st.get("foto_attesa"):
+        t = testo.upper()
+        if t in ["OK", "SI", "SÌ", "CONFERMA", "AGGIUNGI"]:
+            aggiunti = 0
+            for p in st["foto_attesa"]:
+                if not p["trovato"]:
+                    continue
+                for i, (c, q) in enumerate(st["lista"]):
+                    if c == p["codice"]:
+                        st["lista"][i] = (c, q + p["qta"]); break
+                else:
+                    st["lista"].append((p["codice"], p["qta"]))
+                aggiunti += 1
+            st["foto_attesa"] = None
+            await update.message.reply_text(f"✅ Aggiunte {aggiunti} righe dalla foto.\nTotale lista: {len(st['lista'])} righe. Tocca 📥 Excel per il file.", parse_mode="Markdown")
+            return
+        if t in ["ANNULLA", "NO", "CANCELLA"]:
+            st["foto_attesa"] = None
+            await update.message.reply_text("Ok, lettura foto annullata. Nessuna riga aggiunta.")
+            return
+        st["foto_attesa"] = None  # altro testo: prosegui con il flusso normale
     # Prima: se sei in ricerca utente, cerca
     st_tmp = get_state(context)
     if st_tmp.get("modalita") == "cerca_utente":
@@ -414,6 +440,99 @@ async def gestisci_vocale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Non ho riconosciuto un codice. Riprova o scrivimi il codice.")
 
+async def leggi_foglio_foto(update: Update):
+    # Legge una foto di un foglio scritto a mano (codice + quantità) con OpenAI Vision.
+    # Restituisce una lista di dict: {"codice": str, "quantita": int}.
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY non configurata")
+    photo = update.message.photo[-1]  # file di risoluzione più alta
+    f = await photo.get_file()
+    data = await f.download_as_bytearray()
+    b64 = base64.b64encode(bytes(data)).decode()
+    prompt = (
+        "Leggi questa foto di un foglio scritto a mano. Contiene righe con un CODICE PRODOTTO "
+        "e una QUANTITÀ (numero di pezzi). I codici sono alfanumerici tipo DCG418T2-QW o D25133K-QS. "
+        "Rispondi SOLO con un array JSON, senza altro testo, nel formato: "
+        '[{"codice": "DCG418T2-QW", "quantita": 3}]. '
+        "Se una quantità non è indicata usa 1. Ignora intestazioni e righe non di prodotto. "
+        "Se non riconosci nessun codice rispondi con []."
+    )
+    import httpx, json as _json
+    async with httpx.AsyncClient(timeout=90) as client:
+        r = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": "gpt-4o-mini",
+                "temperature": 0,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                    ],
+                }],
+            },
+        )
+        r.raise_for_status()
+        txt = (r.json()["choices"][0]["message"]["content"] or "").strip()
+    # rimuovi eventuali fence markdown ```json ... ```
+    if txt.startswith("```"):
+        txt = txt.split("\n", 1)[1] if "\n" in txt else txt
+        txt = txt.rsplit("```", 1)[0].strip()
+    try:
+        dati = _json.loads(txt)
+    except Exception:
+        raise RuntimeError("Risposta IA non leggibile")
+    out = []
+    for it in (dati if isinstance(dati, list) else []):
+        if isinstance(it, dict) and it.get("codice"):
+            try:
+                q = int(it.get("quantita") or 1)
+            except Exception:
+                q = 1
+            out.append({"codice": str(it["codice"]).strip().upper(), "quantita": max(1, q)})
+    return out
+
+async def gestisci_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await update.message.reply_text("📷 Leggo il foglio...")
+        righe = await leggi_foglio_foto(update)
+    except RuntimeError as e:
+        await update.message.reply_text(f"📷 Lettura foto non disponibile ({e}).\nScrivimi i codici a mano oppure attiva OPENAI_API_KEY su Render.")
+        return
+    except Exception as e:
+        logger.error(f"Errore lettura foto: {e}")
+        await update.message.reply_text("Non sono riuscito a leggere la foto. Riprova con una foto più nitida e ben illuminata.")
+        return
+    if not righe:
+        await update.message.reply_text("Non ho trovato codici nella foto. Riprova con una foto più nitida.")
+        return
+    preview = []
+    for it in righe:
+        cod = normalizza_codice(it["codice"])
+        trovato = cod in CATALOGO or cod in NETTI
+        desc = ""
+        if trovato:
+            desc = CATALOGO.get(cod) or NETTI.get(cod, {}).get("desc", "")
+        preview.append({"codice": cod, "qta": it["quantita"], "trovato": trovato, "letto": it["codice"], "desc": desc})
+    st = get_state(context)
+    st["foto_attesa"] = preview
+    st["in_attesa"] = None
+    ok = [p for p in preview if p["trovato"]]
+    ko = [p for p in preview if not p["trovato"]]
+    righe_txt = []
+    for p in preview:
+        if p["trovato"]:
+            righe_txt.append(f"• ✅ `{p['codice']}` x {p['qta']}" + (f" - {p['desc'][:45]}" if p["desc"] else ""))
+        else:
+            righe_txt.append(f"• ❓ `{p['letto']}` x {p['qta']} (non trovato, letto: {p['letto']})")
+    txt = "📷 *Ho letto dalla foto:*\n" + "\n".join(righe_txt)
+    txt += f"\n\n{len(ok)} validi" + (f", {len(ko)} da verificare" if ko else "") + "."
+    txt += "\nRispondi *OK* per aggiungere alla lista (solo i validi), oppure *ANNULLA*."
+    await update.message.reply_text(txt, parse_mode="Markdown")
+
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     # Logga gli errori senza far riavviare il bot in loop.
     if isinstance(context.error, Conflict):
@@ -470,6 +589,7 @@ def main():
     app.add_handler(CommandHandler("excel", manda_excel))
     app.add_handler(CommandHandler("utenti", lista_utenti))
     app.add_handler(CommandHandler("cerca", cerca_codice))
+    app.add_handler(MessageHandler(filters.PHOTO, gestisci_foto))
     app.add_handler(MessageHandler(filters.VOICE, gestisci_vocale))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, gestisci_testo))
     print("MENGHINI Bot Telegram avviato - NUOVO FLUSSO")
