@@ -398,6 +398,58 @@ async def gestisci_testo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     await cliente(update, context)
 
+def _cf_config():
+    # Ritorna (account_id, api_token) se Cloudflare Workers AI è configurato, altrimenti None.
+    acct = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
+    token = os.getenv("CLOUDFLARE_API_TOKEN", "").strip() or os.getenv("CF_API_TOKEN", "").strip()
+    if not (acct and token):
+        return None
+    return acct, token
+
+async def _cf_run(model, *, json=None, content=None, content_type=None, timeout=120):
+    # Esegue un modello Cloudflare Workers AI e ritorna il JSON completo della risposta.
+    acct, token = _cf_config()
+    import httpx
+    url = f"https://api.cloudflare.com/client/v4/accounts/{acct}/ai/run/{model}"
+    headers = {"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        if json is not None:
+            r = await client.post(url, headers=headers, json=json)
+        else:
+            headers["Content-Type"] = content_type or "application/octet-stream"
+            r = await client.post(url, headers=headers, content=content)
+        r.raise_for_status()
+        data = r.json()
+    if not data.get("success", True) and data.get("errors"):
+        raise RuntimeError(str(data["errors"])[:200])
+    return data
+
+async def _cf_trascrivi(raw):
+    # Trascrive l'audio con Whisper su Cloudflare Workers AI.
+    model = os.getenv("CF_WHISPER_MODEL", "@cf/openai/whisper")
+    data = await _cf_run(model, content=raw, content_type="audio/ogg")
+    return ((data.get("result") or {}).get("text") or "").strip()
+
+_CF_LICENSE_OK = False
+
+async def _cf_leggi_foto(b64, prompt):
+    # Legge un'immagine con Llama 3.2 Vision su Cloudflare Workers AI.
+    global _CF_LICENSE_OK
+    model = os.getenv("CF_VISION_MODEL", "@cf/meta/llama-3.2-11b-vision-instruct")
+    if not _CF_LICENSE_OK:
+        try:
+            await _cf_run(model, json={"prompt": "agree"})
+        except Exception:
+            pass
+        _CF_LICENSE_OK = True
+    data = await _cf_run(model, json={
+        "messages": [{"role": "user", "content": prompt}],
+        "image": f"data:image/jpeg;base64,{b64}",
+        "max_tokens": 1024,
+    })
+    res = data.get("result") or {}
+    return (res.get("response") or res.get("text") or "").strip()
+
 def _ai_config():
     # Sceglie il provider AI compatibile OpenAI: Groq (gratis) se GROQ_API_KEY è impostata,
     # altrimenti OpenAI. Restituisce (base_url, api_key, modello_stt, modello_vision).
@@ -458,10 +510,12 @@ async def _gemini_genera(parts):
     raise RuntimeError(ultimo or "chiamata Gemini fallita")
 
 async def trascrivi_vocale(update: Update) -> str:
-    # Trascrive un vocale. Usa Gemini se configurato, altrimenti Groq/OpenAI (Whisper).
+    # Trascrive un vocale. Usa Cloudflare (gratis) se configurato, altrimenti Gemini o Groq/OpenAI.
     voice = update.message.voice
     f = await voice.get_file()
     raw = bytes(await f.download_as_bytearray())
+    if _cf_config():
+        return await _cf_trascrivi(raw)
     if _gemini_config():
         return await _gemini_genera([
             {"text": "Trascrivi fedelmente in italiano questo audio. Rispondi SOLO con la trascrizione, senza commenti."},
@@ -483,7 +537,7 @@ async def gestisci_vocale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         testo = await trascrivi_vocale(update)
     except RuntimeError:
-        await update.message.reply_text("🎤 Trascrizione vocale non configurata (manca GEMINI_API_KEY). Scrivimi il codice, es. DCG418T2-QW.")
+        await update.message.reply_text("🎤 Trascrizione vocale non configurata (manca CLOUDFLARE_API_TOKEN). Scrivimi il codice, es. DCG418T2-QW.")
         return
     except Exception as e:
         logger.error(f"Errore trascrizione vocale: {e}")
@@ -518,7 +572,9 @@ async def leggi_foglio_foto(update: Update):
         "Se non riconosci nessun codice rispondi con []."
     )
     import json as _json
-    if _gemini_config():
+    if _cf_config():
+        txt = await _cf_leggi_foto(b64, prompt)
+    elif _gemini_config():
         txt = await _gemini_genera([
             {"text": prompt},
             {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
@@ -567,7 +623,7 @@ async def gestisci_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📷 Leggo il foglio...")
         righe = await leggi_foglio_foto(update)
     except RuntimeError as e:
-        await update.message.reply_text(f"📷 Lettura foto non disponibile ({e}).\nScrivimi i codici a mano oppure attiva GEMINI_API_KEY su Render.")
+        await update.message.reply_text(f"📷 Lettura foto non disponibile ({e}).\nScrivimi i codici a mano oppure attiva CLOUDFLARE_API_TOKEN su Render.")
         return
     except Exception as e:
         logger.error(f"Errore lettura foto: {e}")
