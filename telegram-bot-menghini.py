@@ -117,28 +117,58 @@ def normalizza_codice(q):
     for k in list(CATALOGO.keys()) + list(NETTI.keys()):
         if k.replace("-", "") == q:
             return k
+    # Fuzzy match: cerca il codice più vicino nel catalogo (utile per trascrizioni vocali)
+    from difflib import SequenceMatcher
+    migliori = []
+    for k in CATALOGO:
+        k_norm = k.replace("-", "")
+        score = SequenceMatcher(None, q, k_norm).ratio()
+        if score >= 0.75:
+            migliori.append((score, k))
+    if migliori:
+        migliori.sort(reverse=True)
+        return migliori[0][1]
     return q
 
 def estrai_codice_quantita(testo):
     """Estrae (codice, quantita) accettando vari formati:
     'CODICE 3', 'CODICE x3', '3 CODICE', 'CODICE 3 PZ', 'CODICE' (qta=1)."""
     t = testo.upper().strip()
+    # Correzione errori comuni di trascrizione vocale
+    t = t.replace("À", "A").replace("È", "E").replace("É", "E")
+    t = t.replace("Ì", "I").replace("Ò", "O").replace("Ù", "U")
     # 'x3' / 'x 3' -> ' 3 '
     t = re.sub(r'\bX\s*(\d{1,3})\b', r' \1 ', t)
     # '3 PZ' / '3 PEZZI' / '3 QT' / '3 QUANTITA' -> ' 3 '
     t = re.sub(r'\b(\d{1,3})\s*(PZ|PEZZI|PEZ|QT|QTA|QUANTITA)\b', r' \1 ', t)
     qta = 1
     codice = None
-    for tok in re.split(r'[\s,;:]+', t):
-        tok = tok.strip()
-        if not tok:
-            continue
+    tokens = [tok.strip() for tok in re.split(r'[\s,;:]+', t) if tok.strip()]
+    # Prima passata: cerca un token che assomiglia a un codice prodotto
+    for tok in tokens:
         if tok.lstrip('-').isdigit():
             n = int(tok)
             if 0 < n <= 999:
                 qta = n
         elif codice is None:
             codice = tok
+    # Seconda passata: se il codice non è nel catalogo, prova a unire token adiacenti
+    # (es. la trascrizione spezza "DCG418T2-QW" in "DCG 418 T2 QW")
+    if codice:
+        codice_norm = normalizza_codice(codice)
+        if codice_norm not in CATALOGO and codice_norm not in NETTI:
+            # Prova combinazioni di 2-4 token alfanumerici consecutivi
+            alfanum_tokens = [t for t in tokens if not t.lstrip('-').isdigit()]
+            for lun in range(2, min(5, len(alfanum_tokens) + 1)):
+                for i in range(len(alfanum_tokens) - lun + 1):
+                    combo = "".join(alfanum_tokens[i:i+lun])
+                    combo_norm = normalizza_codice(combo)
+                    if combo_norm in CATALOGO or combo_norm in NETTI:
+                        codice = combo_norm
+                        break
+                else:
+                    continue
+                break
     if codice is None:
         return None, qta
     return normalizza_codice(codice), qta
@@ -460,18 +490,38 @@ async def _cf_run(model, *, json=None, content=None, content_type=None, timeout=
 
 async def _cf_trascrivi(raw):
     # Trascrive l'audio con Whisper su Cloudflare Workers AI.
+    # Prova con lingua italiana + prompt contestuale, poi fallback binario.
     modelli = [os.getenv("CF_WHISPER_MODEL", "@cf/openai/whisper-large-v3-turbo"), "@cf/openai/whisper"]
+    b64 = base64.b64encode(raw).decode()
+    initial_prompt = (
+        "Ordine di acquisto in italiano. "
+        "Codici prodotto alfanumerici tipo DCG418T2-QW, DCD996P3-QW, D25133K-QS. "
+        "Quantità come numeri o parole: tre, due, cinque, uno."
+    )
     ultimo = None
     for model in modelli:
+        # Tentativo 1: JSON con audio base64, lingua italiana, prompt
+        try:
+            data = await _cf_run(model, json={
+                "audio": b64,
+                "language": "it",
+                "initial_prompt": initial_prompt,
+            })
+            testo = ((data.get("result") or {}).get("text") or "").strip()
+            if testo:
+                return testo
+            ultimo = "risposta vuota (base64)"
+        except Exception as e:
+            ultimo = str(e)[:200]
+        # Tentativo 2: binario puro
         try:
             data = await _cf_run(model, content=raw, content_type="audio/ogg")
             testo = ((data.get("result") or {}).get("text") or "").strip()
             if testo:
                 return testo
-            ultimo = "risposta vuota"
+            ultimo = "risposta vuota (binario)"
         except Exception as e:
             ultimo = str(e)[:200]
-            continue
     raise RuntimeError(ultimo or "trascrizione fallita")
 
 _CF_LICENSE_OK = False
@@ -593,6 +643,9 @@ async def gestisci_vocale(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     codice, qta = estrai_codice_quantita(testo)
     if codice:
+        # Avvisa se il codice è stato corretto tramite fuzzy matching
+        if codice.upper().replace("-", "") != testo.upper().replace(" ", "").replace("-", ""):
+            await update.message.reply_text(f"🔍 Codice riconosciuto: {codice} (quantità: {qta})")
         await mostra_info_codice(update, context, codice, qta)
     else:
         await update.message.reply_text("Non ho riconosciuto un codice. Riprova o scrivimi il codice.")
