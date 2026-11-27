@@ -542,8 +542,10 @@ async def _cf_leggi_foto(b64, prompt):
             pass
         _CF_LICENSE_OK = True
     data = await _cf_run(model, json={
-        "messages": [{"role": "user", "content": prompt}],
-        "image": f"data:image/jpeg;base64,{b64}",
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            {"type": "text", "text": prompt},
+        ]}],
         "max_tokens": 1024,
     })
     res = data.get("result") or {}
