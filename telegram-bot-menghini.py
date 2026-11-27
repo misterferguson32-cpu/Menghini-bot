@@ -8,7 +8,7 @@ NON mettere il token nel codice. Usa variabile d'ambiente BOT_TOKEN.
 
 import os, csv, io, re, logging, threading, http.server, socketserver
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, TypeHandler, ApplicationHandlerStop, ContextTypes, filters
 from openpyxl import Workbook
 
 logging.basicConfig(level=logging.INFO)
@@ -60,6 +60,42 @@ NETTI.update({
 carica_csv("catalogo.csv", _load_catalogo)
 carica_csv("clienti.csv", _load_clienti)
 carica_csv("netti.csv", _load_netti)
+
+# --- SICUREZZA: allow-list di ID Telegram autorizzati ---
+# Legge gli ID da (1) variabile d'ambiente AUTORIZZATI (separati da virgola/spazio)
+# e (2) file autorizzati.txt (un ID per riga, righe con # ignorate).
+def _carica_autorizzati():
+    ids = set()
+    for x in re.split(r"[,\s]+", os.getenv("AUTORIZZATI", "")):
+        x = x.strip()
+        if x.lstrip("-").isdigit():
+            ids.add(int(x))
+    if os.path.exists("autorizzati.txt"):
+        with open("autorizzati.txt", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                tok = line.split()[0]
+                if tok.lstrip("-").isdigit():
+                    ids.add(int(tok))
+    return ids
+
+AUTORIZZATI = _carica_autorizzati()
+
+async def check_autorizzazione(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Blocca chiunque non sia nella allow-list. Gira per primo (group=-1).
+    user = update.effective_user
+    if user is None:
+        raise ApplicationHandlerStop
+    if user.id not in AUTORIZZATI:
+        logger.warning(f"Accesso NEGATO: id={user.id} username={user.username} nome={user.full_name}")
+        if update.effective_message:
+            await update.effective_message.reply_text(
+                f"⛔ Accesso non autorizzato.\n\nIl tuo ID Telegram è: {user.id}\n"
+                f"Invia questo numero all'amministratore per farti sbloccare."
+            )
+        raise ApplicationHandlerStop
 
 def get_state(context):
     if "cliente" not in context.user_data:
@@ -397,6 +433,8 @@ def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(_post_init).build()
     app.add_error_handler(on_error)
+    # Controllo accesso PRIMA di tutto (group=-1)
+    app.add_handler(TypeHandler(Update, check_autorizzazione), group=-1)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("lista", mostra_lista))
     app.add_handler(CommandHandler("excel", manda_excel))
