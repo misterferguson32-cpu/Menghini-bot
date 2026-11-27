@@ -398,20 +398,39 @@ async def gestisci_testo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     await cliente(update, context)
 
+def _ai_config():
+    # Sceglie il provider AI: Groq (gratis) se GROQ_API_KEY è impostata, altrimenti OpenAI.
+    # Restituisce (base_url, api_key, modello_stt, modello_vision).
+    groq = os.getenv("GROQ_API_KEY", "").strip()
+    if groq:
+        return (
+            "https://api.groq.com/openai/v1",
+            groq,
+            os.getenv("STT_MODEL", "whisper-large-v3-turbo"),
+            os.getenv("VISION_MODEL", "qwen/qwen3.8-27b"),
+        )
+    oa = os.getenv("OPENAI_API_KEY", "").strip()
+    if oa:
+        return (
+            "https://api.openai.com/v1",
+            oa,
+            os.getenv("STT_MODEL", "whisper-1"),
+            os.getenv("VISION_MODEL", "gpt-4o-mini"),
+        )
+    raise RuntimeError("Nessuna chiave AI configurata (GROQ_API_KEY o OPENAI_API_KEY)")
+
 async def trascrivi_vocale(update: Update) -> str:
-    # Trascrive un vocale con l'API OpenAI (Whisper). Richiede la variabile OPENAI_API_KEY.
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY non configurata")
+    # Trascrive un vocale (Whisper). Usa Groq se configurata, altrimenti OpenAI.
+    base, api_key, stt_model, _ = _ai_config()
     voice = update.message.voice
     f = await voice.get_file()
     data = await f.download_as_bytearray()
     import httpx
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
-            "https://api.openai.com/v1/audio/transcriptions",
+            f"{base}/audio/transcriptions",
             headers={"Authorization": f"Bearer {api_key}"},
-            data={"model": "whisper-1", "language": "it"},
+            data={"model": stt_model, "language": "it"},
             files={"file": ("vocale.ogg", bytes(data), "audio/ogg")},
         )
         r.raise_for_status()
@@ -421,7 +440,7 @@ async def gestisci_vocale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         testo = await trascrivi_vocale(update)
     except RuntimeError:
-        await update.message.reply_text("🎤 Trascrizione vocale non configurata (manca OPENAI_API_KEY). Scrivimi il codice, es. DCG418T2-QW.")
+        await update.message.reply_text("🎤 Trascrizione vocale non configurata (manca GROQ_API_KEY). Scrivimi il codice, es. DCG418T2-QW.")
         return
     except Exception as e:
         logger.error(f"Errore trascrizione vocale: {e}")
@@ -441,11 +460,9 @@ async def gestisci_vocale(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Non ho riconosciuto un codice. Riprova o scrivimi il codice.")
 
 async def leggi_foglio_foto(update: Update):
-    # Legge una foto di un foglio scritto a mano (codice + quantità) con OpenAI Vision.
+    # Legge una foto di un foglio scritto a mano (codice + quantità) con un modello vision.
     # Restituisce una lista di dict: {"codice": str, "quantita": int}.
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY non configurata")
+    base, api_key, _, vision_model = _ai_config()
     photo = update.message.photo[-1]  # file di risoluzione più alta
     f = await photo.get_file()
     data = await f.download_as_bytearray()
@@ -461,10 +478,10 @@ async def leggi_foglio_foto(update: Update):
     import httpx, json as _json
     async with httpx.AsyncClient(timeout=90) as client:
         r = await client.post(
-            "https://api.openai.com/v1/chat/completions",
+            f"{base}/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
             json={
-                "model": "gpt-4o-mini",
+                "model": vision_model,
                 "temperature": 0,
                 "messages": [{
                     "role": "user",
@@ -500,7 +517,7 @@ async def gestisci_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📷 Leggo il foglio...")
         righe = await leggi_foglio_foto(update)
     except RuntimeError as e:
-        await update.message.reply_text(f"📷 Lettura foto non disponibile ({e}).\nScrivimi i codici a mano oppure attiva OPENAI_API_KEY su Render.")
+        await update.message.reply_text(f"📷 Lettura foto non disponibile ({e}).\nScrivimi i codici a mano oppure attiva GROQ_API_KEY su Render.")
         return
     except Exception as e:
         logger.error(f"Errore lettura foto: {e}")
