@@ -365,6 +365,13 @@ async def gestisci_vocale(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(e)
         await update.message.reply_text("Vocale non letto. Scrivimi il codice qui.")
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    # Logga gli errori senza far riavviare il bot in loop.
+    if isinstance(context.error, Conflict):
+        logger.warning("Conflict getUpdates: un'altra istanza ha ripreso il polling (normale durante un deploy/riavvio).")
+    else:
+        logger.error("Errore durante la gestione di un update", exc_info=context.error)
+
 def start_dummy_server():
     # Render Web Service vuole una porta aperta, altrimenti dice "No open ports detected"
     # e riavvia il bot in loop. Questo server finto tiene aperta la porta.
@@ -383,7 +390,17 @@ def main():
         print("ERRORE: metti il token in variabile BOT_TOKEN")
         return
     start_dummy_server()
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    async def _post_init(app):
+        # Rimuove eventuali webhook residui che bloccano il polling.
+        try:
+            await app.bot.delete_webhook()
+            logger.info("Webhook rimosso (o assente): polling attivo.")
+        except Exception as e:
+            logger.warning(f"delete_webhook non riuscito: {e}")
+
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(_post_init).build()
+    app.add_error_handler(on_error)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("lista", mostra_lista))
     app.add_handler(CommandHandler("excel", manda_excel))
@@ -392,9 +409,9 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE, gestisci_vocale))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, gestisci_testo))
     print("MENGHINI Bot Telegram avviato - NUOVO FLUSSO")
-    # drop_pending_updates=True risolve il Conflict: terminated by other getUpdates
-    # quando il bot era partito 2 volte. Ora riparte pulito.
-    app.run_polling(drop_pending_updates=True)
+    # Nessun drop_pending_updates: i messaggi arrivati mentre il bot era offline
+    # vengono elaborati e ricevono risposta al riavvio.
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
