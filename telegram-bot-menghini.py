@@ -399,8 +399,8 @@ async def gestisci_testo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await cliente(update, context)
 
 def _ai_config():
-    # Sceglie il provider AI: Groq (gratis) se GROQ_API_KEY è impostata, altrimenti OpenAI.
-    # Restituisce (base_url, api_key, modello_stt, modello_vision).
+    # Sceglie il provider AI compatibile OpenAI: Groq (gratis) se GROQ_API_KEY è impostata,
+    # altrimenti OpenAI. Restituisce (base_url, api_key, modello_stt, modello_vision).
     groq = os.getenv("GROQ_API_KEY", "").strip()
     if groq:
         return (
@@ -417,21 +417,64 @@ def _ai_config():
             os.getenv("STT_MODEL", "whisper-1"),
             os.getenv("VISION_MODEL", "gpt-4o-mini"),
         )
-    raise RuntimeError("Nessuna chiave AI configurata (GROQ_API_KEY o OPENAI_API_KEY)")
+    raise RuntimeError("Nessuna chiave AI configurata (GEMINI_API_KEY, GROQ_API_KEY o OPENAI_API_KEY)")
+
+def _gemini_config():
+    # Ritorna (api_key, [modelli]) se Gemini è configurato, altrimenti None.
+    key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
+    if not key:
+        return None
+    modelli = [m.strip() for m in os.getenv("GEMINI_MODEL", "").split(",") if m.strip()]
+    if not modelli:
+        modelli = ["gemini-2.5-flash", "gemini-2.0-flash"]
+    return key, modelli
+
+async def _gemini_genera(parts):
+    # Chiama Gemini generateContent con i "parts" (testo/immagine/audio) e restituisce il testo.
+    cfg = _gemini_config()
+    if not cfg:
+        raise RuntimeError("GEMINI_API_KEY non configurata")
+    key, modelli = cfg
+    import httpx
+    ultimo = None
+    async with httpx.AsyncClient(timeout=90) as client:
+        for model in modelli:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+            try:
+                r = await client.post(url, json={"contents": [{"parts": parts}]})
+                if r.status_code in (404, 400):
+                    ultimo = f"modello {model}: {r.text[:200]}"
+                    continue
+                r.raise_for_status()
+                cands = (r.json() or {}).get("candidates") or []
+                if not cands:
+                    ultimo = "nessuna risposta dal modello"
+                    continue
+                parti = cands[0].get("content", {}).get("parts", []) or []
+                return "".join(p.get("text", "") for p in parti).strip()
+            except Exception as e:
+                ultimo = str(e)
+                continue
+    raise RuntimeError(ultimo or "chiamata Gemini fallita")
 
 async def trascrivi_vocale(update: Update) -> str:
-    # Trascrive un vocale (Whisper). Usa Groq se configurata, altrimenti OpenAI.
-    base, api_key, stt_model, _ = _ai_config()
+    # Trascrive un vocale. Usa Gemini se configurato, altrimenti Groq/OpenAI (Whisper).
     voice = update.message.voice
     f = await voice.get_file()
-    data = await f.download_as_bytearray()
+    raw = bytes(await f.download_as_bytearray())
+    if _gemini_config():
+        return await _gemini_genera([
+            {"text": "Trascrivi fedelmente in italiano questo audio. Rispondi SOLO con la trascrizione, senza commenti."},
+            {"inline_data": {"mime_type": "audio/ogg", "data": base64.b64encode(raw).decode()}},
+        ])
+    base, api_key, stt_model, _ = _ai_config()
     import httpx
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
             f"{base}/audio/transcriptions",
             headers={"Authorization": f"Bearer {api_key}"},
             data={"model": stt_model, "language": "it"},
-            files={"file": ("vocale.ogg", bytes(data), "audio/ogg")},
+            files={"file": ("vocale.ogg", raw, "audio/ogg")},
         )
         r.raise_for_status()
         return (r.json().get("text") or "").strip()
@@ -440,7 +483,7 @@ async def gestisci_vocale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         testo = await trascrivi_vocale(update)
     except RuntimeError:
-        await update.message.reply_text("🎤 Trascrizione vocale non configurata (manca GROQ_API_KEY). Scrivimi il codice, es. DCG418T2-QW.")
+        await update.message.reply_text("🎤 Trascrizione vocale non configurata (manca GEMINI_API_KEY). Scrivimi il codice, es. DCG418T2-QW.")
         return
     except Exception as e:
         logger.error(f"Errore trascrizione vocale: {e}")
@@ -462,7 +505,6 @@ async def gestisci_vocale(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def leggi_foglio_foto(update: Update):
     # Legge una foto di un foglio scritto a mano (codice + quantità) con un modello vision.
     # Restituisce una lista di dict: {"codice": str, "quantita": int}.
-    base, api_key, _, vision_model = _ai_config()
     photo = update.message.photo[-1]  # file di risoluzione più alta
     f = await photo.get_file()
     data = await f.download_as_bytearray()
@@ -475,25 +517,33 @@ async def leggi_foglio_foto(update: Update):
         "Se una quantità non è indicata usa 1. Ignora intestazioni e righe non di prodotto. "
         "Se non riconosci nessun codice rispondi con []."
     )
-    import httpx, json as _json
-    async with httpx.AsyncClient(timeout=90) as client:
-        r = await client.post(
-            f"{base}/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json={
-                "model": vision_model,
-                "temperature": 0,
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    ],
-                }],
-            },
-        )
-        r.raise_for_status()
-        txt = (r.json()["choices"][0]["message"]["content"] or "").strip()
+    import json as _json
+    if _gemini_config():
+        txt = await _gemini_genera([
+            {"text": prompt},
+            {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
+        ])
+    else:
+        base, api_key, _, vision_model = _ai_config()
+        import httpx
+        async with httpx.AsyncClient(timeout=90) as client:
+            r = await client.post(
+                f"{base}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": vision_model,
+                    "temperature": 0,
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                        ],
+                    }],
+                },
+            )
+            r.raise_for_status()
+            txt = (r.json()["choices"][0]["message"]["content"] or "").strip()
     # rimuovi eventuali fence markdown ```json ... ```
     if txt.startswith("```"):
         txt = txt.split("\n", 1)[1] if "\n" in txt else txt
@@ -517,7 +567,7 @@ async def gestisci_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📷 Leggo il foglio...")
         righe = await leggi_foglio_foto(update)
     except RuntimeError as e:
-        await update.message.reply_text(f"📷 Lettura foto non disponibile ({e}).\nScrivimi i codici a mano oppure attiva GROQ_API_KEY su Render.")
+        await update.message.reply_text(f"📷 Lettura foto non disponibile ({e}).\nScrivimi i codici a mano oppure attiva GEMINI_API_KEY su Render.")
         return
     except Exception as e:
         logger.error(f"Errore lettura foto: {e}")
