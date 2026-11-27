@@ -169,6 +169,15 @@ async def diagnostica(update: Update, context: ContextTypes.DEFAULT_TYPE):
         base = None
     acct_ok = "sì" if os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip() else "NO"
     tok_ok = "sì" if (os.getenv("CLOUDFLARE_API_TOKEN", "").strip() or os.getenv("CF_API_TOKEN", "").strip()) else "NO"
+    # Elenca TUTTE le variabili d'ambiente che sembrano AI (solo nome + ultime 4 cifre)
+    keys_ai = []
+    for k in sorted(os.environ):
+        kl = k.upper()
+        if any(s in kl for s in ["CLOUD", "GEMINI", "GROQ", "OPENAI", "GOOGL", "BOT_TOKEN", "API", "TOKEN", "KEY"]):
+            v = os.environ[k]
+            fine = (v[-4:] if len(v) >= 4 else v) if v else "(VUOTA)"
+            keys_ai.append(f"{k}=...{fine}")
+    elenco = "\n".join(keys_ai) if keys_ai else "(nessuna)"
     testo = (
         "🔧 *Diagnostica*\n"
         f"• Cloudflare: {'OK' if cf else 'MANCANTE'} (Account ID: {acct_ok}, Token: {tok_ok})\n"
@@ -177,7 +186,8 @@ async def diagnostica(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Utenti autorizzati: {len(AUTORIZZATI)}\n"
         f"• Catalogo: {len(CATALOGO)} codici\n"
         f"• Netti: {len(NETTI)} codici\n"
-        f"• Clienti: {len(CLIENTI)}"
+        f"• Clienti: {len(CLIENTI)}\n\n"
+        f"*Variabili AI trovate nel processo:*\n{elenco}"
     )
     await update.message.reply_text(testo, parse_mode="Markdown")
 
