@@ -533,23 +533,37 @@ _CF_LICENSE_OK = False
 
 async def _cf_leggi_foto(b64, prompt):
     # Legge un'immagine con Llama 3.2 Vision su Cloudflare Workers AI.
+    # Prova prima il modello vision principale, poi fallback su modelli alternativi.
     global _CF_LICENSE_OK
-    model = os.getenv("CF_VISION_MODEL", "@cf/meta/llama-3.2-11b-vision-instruct")
-    if not _CF_LICENSE_OK:
+    modelli = [
+        os.getenv("CF_VISION_MODEL", "@cf/meta/llama-3.2-11b-vision-instruct"),
+        "@cf/meta/llama-3.2-90b-vision-instruct",
+    ]
+    ultimo = None
+    for model in modelli:
+        if not _CF_LICENSE_OK:
+            try:
+                await _cf_run(model, json={"prompt": "agree"})
+            except Exception:
+                pass
+            _CF_LICENSE_OK = True
         try:
-            await _cf_run(model, json={"prompt": "agree"})
-        except Exception:
-            pass
-        _CF_LICENSE_OK = True
-    data = await _cf_run(model, json={
-        "messages": [{"role": "user", "content": [
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-            {"type": "text", "text": prompt},
-        ]}],
-        "max_tokens": 1024,
-    })
-    res = data.get("result") or {}
-    return (res.get("response") or res.get("text") or "").strip()
+            data = await _cf_run(model, json={
+                "messages": [{"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                    {"type": "text", "text": prompt},
+                ]}],
+                "max_tokens": 1024,
+            })
+            res = data.get("result") or {}
+            testo = (res.get("response") or res.get("text") or "").strip()
+            if testo:
+                return testo
+            ultimo = "risposta vuota"
+        except Exception as e:
+            ultimo = str(e)[:200]
+            continue
+    raise RuntimeError(ultimo or "lettura foto fallita")
 
 def _ai_config():
     # Sceglie il provider AI compatibile OpenAI: Groq (gratis) se GROQ_API_KEY è impostata,
@@ -665,8 +679,11 @@ async def leggi_foglio_foto(update: Update):
     data = await f.download_as_bytearray()
     b64 = base64.b64encode(bytes(data)).decode()
     prompt = (
-        "Leggi questa foto di un foglio scritto a mano. Contiene righe con un CODICE PRODOTTO "
-        "e una QUANTITÀ (numero di pezzi). I codici sono alfanumerici tipo DCG418T2-QW o D25133K-QS. "
+        "Questa è una foto di un foglio scritto a mano che contiene una lista di acquisto. "
+        "Ogni riga ha un CODICE PRODOTTO (alfanumerico, tipo DCG418T2-QW, DCD996P3-QW, D25133K-QS, "
+        "spesso con lettere e numeri separati da trattino) e una QUANTITÀ (numero intero di pezzi, "
+        "spesso scritto come cifra o parola: 1, 2, 3, uno, due, tre). "
+        "Effettua una lettura OCR accurata del testo scritto a mano. "
         "Rispondi SOLO con un array JSON, senza altro testo, nel formato: "
         '[{"codice": "DCG418T2-QW", "quantita": 3}]. '
         "Se una quantità non è indicata usa 1. Ignora intestazioni e righe non di prodotto. "
