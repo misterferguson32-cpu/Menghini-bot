@@ -215,18 +215,12 @@ async def mostra_info_codice(update: Update, context: ContextTypes.DEFAULT_TYPE,
     codice = normalizza_codice(codice_raw)
     st = get_state(context)
     if codice not in CATALOGO and codice not in NETTI:
-        # Codice non in catalogo: aggiungilo direttamente alla lista
-        for i, (c, q) in enumerate(st["lista"]):
-            if c == codice:
-                st["lista"][i] = (c, q + qta_proposta)
-                break
-        else:
-            st["lista"].append((codice, qta_proposta))
-        st["in_attesa"] = None
+        # Codice non in catalogo: chiedi quanti pezzi, poi aggiungi
+        st["in_attesa"] = {"codice": codice, "qta_proposta": qta_proposta, "non_trovato": True}
         await update.message.reply_text(
-            f"⚠️ Codice *{codice}* non nel catalogo, aggiunto comunque alla lista x {qta_proposta}.\n"
-            f"Totale righe in lista: {len(st['lista'])}\n\n"
-            f"Dimmi un altro codice, oppure tocca 📥 Excel per il file.",
+            f"⚠️ Codice *{codice}* non nel catalogo.\n\n"
+            f"Quanti pezzi vuoi aggiungere?\n"
+            f"Rispondi con un numero (es. *3*), oppure *SI* per aggiungerne {qta_proposta}, oppure *NO* per annullare.",
             parse_mode="Markdown")
         return
     desc = CATALOGO.get(codice, NETTI.get(codice, {}).get("desc", ""))
