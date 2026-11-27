@@ -7,6 +7,7 @@ NON mettere il token nel codice. Usa variabile d'ambiente BOT_TOKEN.
 """
 
 import os, csv, io, re, base64, logging, threading, http.server, socketserver
+from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.error import Conflict
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, TypeHandler, ApplicationHandlerStop, ContextTypes, filters
@@ -341,7 +342,12 @@ async def cliente(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(trovati) == 1:
         c = trovati[0]
         get_state(context)["cliente"] = c
-        await update.message.reply_text(f"✅ Cliente scelto:\n*{c['nome']}*\n{c['localita']} - {c['indirizzo']}\nCodice cliente: {c['num']}", parse_mode="Markdown")
+        await update.message.reply_text(
+            f"✅ Cliente scelto:\n*{c['nome']}*\n{c['localita']} - {c['indirizzo']}\nCodice cliente: {c['num']}\n\n"
+            f"Ora puoi iniziare la lista per *{c['nome']}*.\n"
+            f"Mandami i codici articolo (es. `DCG418T2-QW 3` o più codici in un messaggio).\n"
+            f"Alla fine tocca 📥 Excel per il file con nome cliente e data.",
+            parse_mode="Markdown")
         return
     txt = "Trovati più clienti, riscrivi nome completo:\n" + "\n".join([f"• *{c['num']}* - {c['nome']} - {c['localita']}" for c in trovati[:10]])
     await update.message.reply_text(txt, parse_mode="Markdown")
@@ -392,7 +398,10 @@ async def cerca_utente(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c = trovati[0]
         get_state(context)["cliente"] = c
         await update.message.reply_text(
-            f"✅ Utente trovato:\n*Codice:* {c['num']}\n*Nome:* {c['nome']}\n*Località:* {c['localita']}\n*Indirizzo:* {c['indirizzo']}\n*Sales Office:* {c['office']}\n\nCliente scelto per l'ordine. Ora dimmi un codice articolo.",
+            f"✅ Utente trovato:\n*Codice:* {c['num']}\n*Nome:* {c['nome']}\n*Località:* {c['localita']}\n*Indirizzo:* {c['indirizzo']}\n*Sales Office:* {c['office']}\n\n"
+            f"Cliente scelto per l'ordine: *{c['nome']}*.\n"
+            f"Ora dimmi un codice articolo (es. `DCG418T2-QW 3` o più codici in un messaggio).\n"
+            f"Alla fine tocca 📥 Excel per il file con nome cliente e data.",
             parse_mode="Markdown")
         return
     txt2 = f"Trovati {len(trovati)} utenti:\n\n" + "\n".join([f"• *{c['num']}* - {c['nome']} - {c['localita']}" for c in trovati[:15]])
@@ -420,15 +429,27 @@ async def manda_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not st["lista"]:
         await update.message.reply_text("Lista vuota, niente da esportare.")
         return
+    oggi = datetime.now().strftime("%Y-%m-%d")
     wb = Workbook(); ws = wb.active; ws.title = "Ordine"
+    # Intestazione con nome cliente e data
+    if st["cliente"]:
+        ws.append(["Cliente:", st["cliente"]["nome"]])
+        ws.append(["Codice cliente:", st["cliente"]["num"]])
+    ws.append(["Data ordine:", oggi])
+    ws.append([])  # riga vuota di separazione
     ws.append(["Codice", "Quantità"])
     for c, q in st["lista"]:
         ws.append([c, q])
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
-    nome = "Ordine_MENGHINI.xlsx"
     if st["cliente"]:
-        nome = f"Ordine_{st['cliente']['nome'].replace(' ', '_')}.xlsx"
-    await update.message.reply_document(document=buf, filename=nome, caption=f"✅ Excel pronto - {len(st['lista'])} righe, solo Codice e Quantità\nCliente: {st['cliente']['nome'] if st['cliente'] else 'Non scelto'}")
+        nome = f"Ordine_{st['cliente']['nome'].replace(' ', '_')}_{oggi}.xlsx"
+    else:
+        nome = f"Ordine_MENGHINI_{oggi}.xlsx"
+    cliente_info = st["cliente"]["nome"] if st["cliente"] else "Non scelto"
+    await update.message.reply_document(
+        document=buf, filename=nome,
+        caption=f"✅ Excel pronto - {len(st['lista'])} righe\nCliente: {cliente_info}\nData: {oggi}",
+        parse_mode="Markdown")
 
 async def gestisci_testo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     testo = (update.message.text or "").strip()
