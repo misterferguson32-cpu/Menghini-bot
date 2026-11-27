@@ -117,17 +117,6 @@ def normalizza_codice(q):
     for k in list(CATALOGO.keys()) + list(NETTI.keys()):
         if k.replace("-", "") == q:
             return k
-    # Fuzzy match: cerca il codice più vicino nel catalogo (utile per trascrizioni vocali)
-    from difflib import SequenceMatcher
-    migliori = []
-    for k in CATALOGO:
-        k_norm = k.replace("-", "")
-        score = SequenceMatcher(None, q, k_norm).ratio()
-        if score >= 0.75:
-            migliori.append((score, k))
-    if migliori:
-        migliori.sort(reverse=True)
-        return migliori[0][1]
     return q
 
 def estrai_codice_quantita(testo):
@@ -226,12 +215,18 @@ async def mostra_info_codice(update: Update, context: ContextTypes.DEFAULT_TYPE,
     codice = normalizza_codice(codice_raw)
     st = get_state(context)
     if codice not in CATALOGO and codice not in NETTI:
-        st["in_attesa"] = {"codice": codice, "qta_proposta": qta_proposta, "non_trovato": True}
+        # Codice non in catalogo: aggiungilo direttamente alla lista
+        for i, (c, q) in enumerate(st["lista"]):
+            if c == codice:
+                st["lista"][i] = (c, q + qta_proposta)
+                break
+        else:
+            st["lista"].append((codice, qta_proposta))
+        st["in_attesa"] = None
         await update.message.reply_text(
-            f"⚠️ Il codice *{codice}* non è nel catalogo.\n\n"
-            f"Vuoi aggiungerlo comunque alla lista?\n"
-            f"Quantità proposta: {qta_proposta}\n"
-            f"Rispondi: *SI {qta_proposta}* per aggiungere {qta_proposta} pezzi, oppure *SI 5* per 5 pezzi, oppure *NO*.",
+            f"⚠️ Codice *{codice}* non nel catalogo, aggiunto comunque alla lista x {qta_proposta}.\n"
+            f"Totale righe in lista: {len(st['lista'])}\n\n"
+            f"Dimmi un altro codice, oppure tocca 📥 Excel per il file.",
             parse_mode="Markdown")
         return
     desc = CATALOGO.get(codice, NETTI.get(codice, {}).get("desc", ""))
@@ -670,9 +665,6 @@ async def gestisci_vocale(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     codice, qta = estrai_codice_quantita(testo)
     if codice:
-        # Avvisa se il codice è stato corretto tramite fuzzy matching
-        if codice.upper().replace("-", "") != testo.upper().replace(" ", "").replace("-", ""):
-            await update.message.reply_text(f"🔍 Codice riconosciuto: {codice} (quantità: {qta})")
         await mostra_info_codice(update, context, codice, qta)
     else:
         await update.message.reply_text("Non ho riconosciuto un codice. Riprova o scrivimi il codice.")
